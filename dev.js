@@ -1,7 +1,4 @@
 const { exec } = require('child_process');
-const dotenv = require('dotenv');
-
-// Load environment variables
 require('dotenv').config();
 
 // Store the actual port that will be used
@@ -35,6 +32,46 @@ const findFreePort = () => {
   });
 };
 
+// Function to update Twilio webhook automatically
+const updateTwilioWebhook = (url) => {
+  try {
+    const twilioClient = require('twilio')(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    );
+    
+    // Get all phone numbers
+    twilioClient.incomingPhoneNumbers.list()
+      .then(numbers => {
+        // Find the number that matches your TWILIO_PHONE_NUMBER
+        const phoneNumber = numbers.find(
+          n => n.phoneNumber === process.env.TWILIO_PHONE_NUMBER
+        );
+        
+        if (!phoneNumber) {
+          console.error('❌ Could not find your Twilio phone number');
+          return;
+        }
+        
+        // Update the webhook URL
+        return twilioClient.incomingPhoneNumbers(phoneNumber.sid)
+          .update({
+            voiceUrl: `${url}/api/voice`
+          });
+      })
+      .then(() => {
+        console.log('✅ Twilio webhook automatically updated to:');
+        console.log(`📞 ${url}/api/voice`);
+      })
+      .catch(error => {
+        console.error('❌ Failed to update Twilio webhook:', error);
+        console.error('Please update it manually in the Twilio console');
+      });
+  } catch (error) {
+    console.error('❌ Error initializing Twilio client:', error);
+  }
+};
+
 // First find a free port, then start localtunnel
 findFreePort().then(port => {
   actualPort = port;
@@ -54,11 +91,11 @@ findFreePort().then(port => {
       process.env.DYNAMIC_BASE_URL = url;
       process.env.PORT = actualPort;
       
+      // Automatically update Twilio webhook
+      updateTwilioWebhook(url);
+      
       // Start the server with the dynamic URL
       console.log('📡 Starting server with dynamic URL...');
-      console.log('⚠️ IMPORTANT: Update your Twilio phone number webhook to:');
-      console.log(`📞 ${url}/api/voice\n`);
-      
       require('./server.js');
     } else {
       console.log(data);

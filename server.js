@@ -1,4 +1,10 @@
-require('dotenv').config();
+// Handle missing dotenv in production
+try {
+  require('dotenv').config();
+} catch (error) {
+  console.log('Dotenv not found, using environment variables directly');
+}
+
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./src/config/db');
@@ -27,7 +33,7 @@ app.get('/', (req, res) => {
 // Use API routes
 app.use('/api', apiRoutes);
 
-// Try to start the server with port fallback
+// Start the server with fallback for port conflicts
 const startServer = (port) => {
   try {
     const server = app.listen(port, () => {

@@ -9,18 +9,28 @@ const axios = require('axios');
 
 // Helper function to get the base URL
 const getBaseUrl = () => {
-  // If we have a dynamic URL from LocalTunnel, use that
+  // For production (Render)
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    return process.env.BASE_URL || 'https://grainllyvoiceagent.onrender.com';
+  }
+  
+  // For development with LocalTunnel
   if (process.env.DYNAMIC_BASE_URL) {
     return process.env.DYNAMIC_BASE_URL;
   }
   
-  // If we're in local development without dynamic URL
-  if (process.env.LOCAL_DEVELOPMENT === 'true') {
-    return ''; // Use relative URLs
-  }
-  
-  // Otherwise use the configured BASE_URL for production
-  return process.env.BASE_URL;
+  // Fallback for local development
+  return 'https://grainllyvoiceagent.onrender.com';
+};
+
+// Helper to log Twilio params
+const logTwilioParams = (action, params) => {
+  console.log(`🔍 Twilio ${action} params:`, {
+    url: params.url,
+    to: params.to,
+    from: params.from,
+    baseUrl: getBaseUrl()
+  });
 };
 
 // Initialize Twilio client
@@ -31,13 +41,18 @@ const getTwilioClient = () => {
   return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 };
 
-// Initialize blockchain provider
-const provider = new ethers.providers.JsonRpcProvider(process.env.POLYGON_AMOY_RPC);
-const diamondContract = new ethers.Contract(
-  process.env.DIAMOND_CONTRACT_ADDRESS,
-  DashboardABI,
-  provider
-);
+// Initialize blockchain provider - no top-level await
+let diamondContract;
+try {
+  const provider = new ethers.providers.JsonRpcProvider(process.env.POLYGON_AMOY_RPC);
+  diamondContract = new ethers.Contract(
+    process.env.DIAMOND_CONTRACT_ADDRESS,
+    DashboardABI,
+    provider
+  );
+} catch (error) {
+  console.error('Failed to initialize blockchain provider:', error);
+}
 
 // Simple voice welcome endpoint
 router.post('/voice', (req, res) => {
@@ -114,7 +129,6 @@ router.post('/recording-complete', (req, res) => {
   const recordingUrl = req.body.RecordingUrl;
   
   // Update database with recording URL only
-  // The transcription will come in the separate callback
   if (recordingUrl && callSid) {
     FraudReport.findOneAndUpdate(
       { callSid },
@@ -141,51 +155,48 @@ router.post('/recording-complete', (req, res) => {
   res.send(twiml.toString());
 });
 
-// Transcription callback handler
-router.post('/transcription-callback', async (req, res) => {
+// Transcription callback handler - using promises instead of async/await
+router.post('/transcription-callback', (req, res) => {
   console.log('📝 Transcription received');
   console.log('Request body:', req.body);
   
   const callSid = req.body.CallSid;
-  const recordingSid = req.body.RecordingSid;
   const transcriptionText = req.body.TranscriptionText;
   
   // Update the report with the actual transcription
   if (callSid && transcriptionText) {
-    try {
-      // Get the report
-      const report = await FraudReport.findOne({ callSid });
-      
-      if (report) {
-        // Analyze the actual transcription
-        const { fraudSummary, fraudSeverity } = await analyzeFraudReport(
-          transcriptionText, 
-          report.language || 'en-US'
-        );
-        
-        // Update the report with real transcription and analysis
-        await FraudReport.findOneAndUpdate(
-          { callSid },
-          { 
-            transcript: transcriptionText,
-            fraudSummary,
-            fraudSeverity
-          }
-        );
-        
+    FraudReport.findOne({ callSid })
+      .then(report => {
+        if (report) {
+          return analyzeFraudReport(
+            transcriptionText, 
+            report.language || 'en-US'
+          ).then(({ fraudSummary, fraudSeverity }) => {
+            return FraudReport.findOneAndUpdate(
+              { callSid },
+              { 
+                transcript: transcriptionText,
+                fraudSummary,
+                fraudSeverity
+              }
+            );
+          });
+        }
+      })
+      .then(() => {
         console.log('✅ Report updated with actual transcription');
-      }
-    } catch (error) {
-      console.error('❌ Error processing transcription:', error);
-    }
+      })
+      .catch(error => {
+        console.error('❌ Error processing transcription:', error);
+      });
   }
   
   // Send a 200 OK response to Twilio
   res.status(200).send('OK');
 });
 
-// Make test call
-router.post('/make-test-call', async (req, res) => {
+// Make test call - using promises instead of async/await
+router.post('/make-test-call', (req, res) => {
   const { phoneNumber } = req.body;
   
   if (!phoneNumber) {
@@ -203,36 +214,48 @@ router.post('/make-test-call', async (req, res) => {
     const formattedPhone = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
     
     // Make the call - using the dynamic base URL
-    const call = await client.calls.create({
+    const callParams = {
       url: `${getBaseUrl()}/api/voice`,
       to: formattedPhone,
       from: process.env.TWILIO_PHONE_NUMBER,
       statusCallback: `${getBaseUrl()}/api/call-status`,
       statusCallbackEvent: ['completed']
-    });
+    };
     
-    // Create report entry
-    const report = new FraudReport({
-      aadhaar: '123456789012',
-      name: 'Test User',
-      mobile: formattedPhone,
-      callSid: call.sid,
-      callStatus: 'initiated'
-    });
+    logTwilioParams('call', callParams);
     
-    await report.save();
-    
-    res.json({
-      success: true,
-      message: 'Test call initiated',
-      callSid: call.sid
-    });
+    client.calls.create(callParams)
+      .then(call => {
+        const report = new FraudReport({
+          aadhaar: '123456789012',
+          name: 'Test User',
+          mobile: formattedPhone,
+          callSid: call.sid,
+          callStatus: 'initiated'
+        });
+        
+        return report.save().then(() => call);
+      })
+      .then(call => {
+        res.json({
+          success: true,
+          message: 'Test call initiated',
+          callSid: call.sid
+        });
+      })
+      .catch(error => {
+        console.error('❌ Error making test call:', error);
+        res.status(500).json({
+          success: false,
+          error: 'Failed to make call',
+          details: error.message
+        });
+      });
   } catch (error) {
-    console.error('❌ Error making test call:', error);
-    
+    console.error('❌ Error initializing call:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to make call',
+      error: 'Failed to initialize call',
       details: error.message
     });
   }
@@ -253,8 +276,8 @@ router.post('/call-status', (req, res) => {
   res.status(200).send('OK');
 });
 
-// Main fraud report endpoint with blockchain
-router.post('/report-fraud', async (req, res) => {
+// Main fraud report endpoint with blockchain - using promises instead of async/await
+router.post('/report-fraud', (req, res) => {
   const { aadhaar } = req.body;
   
   if (!aadhaar) {
@@ -264,124 +287,129 @@ router.post('/report-fraud', async (req, res) => {
     });
   }
 
-  try {
-    // Fetch consumer data from blockchain
-    const consumer = await diamondContract.getConsumerByAadhaar(aadhaar);
-    
-    const name = consumer.name;
-    const mobile = consumer.mobile;
-    
-    if (!mobile || mobile.length < 10) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Valid mobile number not found for this Aadhaar' 
-      });
-    }
-
-    // Format phone number
-    const formattedMobile = mobile.startsWith('+91') ? mobile : `+91${mobile}`;
-    
-    // Make the call
-    const client = getTwilioClient();
-    const call = await client.calls.create({
-      url: `${getBaseUrl()}/api/voice`,
-      to: formattedMobile,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      statusCallback: `${getBaseUrl()}/api/call-status`,
-      statusCallbackEvent: ['completed']
-    });
-
-    // Create report
-    const report = new FraudReport({
-      aadhaar: aadhaar.toString(),
-      name,
-      mobile: formattedMobile,
-      callSid: call.sid,
-      callStatus: 'initiated'
-    });
-
-    await report.save();
-
-    res.json({ 
-      success: true,
-      message: 'Call initiated successfully',
-      callSid: call.sid,
-      consumerName: name,
-      reportId: report._id
-    });
-  } catch (error) {
-    console.error('❌ Error in report-fraud:', error);
-    
-    if (error.message && error.message.includes('Consumer not found')) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Consumer not found with this Aadhaar number' 
-      });
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: 'Internal server error',
-      details: error.message 
+  if (!diamondContract) {
+    return res.status(500).json({
+      success: false,
+      error: 'Blockchain provider not initialized'
     });
   }
-});
 
-// Get all reports with playable recording URLs
-router.get('/reports', async (req, res) => {
-  try {
-    const reports = await FraudReport.find()
-      .sort({ createdAt: -1 });
-    
-    // Add a playable URL for each recording
-    const reportsWithPlayableUrl = reports.map(report => {
-      const reportObj = report.toObject();
+  diamondContract.getConsumerByAadhaar(aadhaar)
+    .then(consumer => {
+      const name = consumer.name;
+      const mobile = consumer.mobile;
       
-      if (reportObj.recordingUrl) {
-        // Extract the recording SID from the URL
-        const recordingSid = reportObj.recordingUrl.split('/').pop();
-        reportObj.playableRecordingUrl = `${getBaseUrl()}/api/recording/${recordingSid}`;
+      if (!mobile || mobile.length < 10) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Valid mobile number not found for this Aadhaar' 
+        });
+      }
+
+      // Format phone number
+      const formattedMobile = mobile.startsWith('+91') ? mobile : `+91${mobile}`;
+      
+      // Make the call
+      const client = getTwilioClient();
+      return client.calls.create({
+        url: `${getBaseUrl()}/api/voice`,
+        to: formattedMobile,
+        from: process.env.TWILIO_PHONE_NUMBER,
+        statusCallback: `${getBaseUrl()}/api/call-status`,
+        statusCallbackEvent: ['completed']
+      }).then(call => {
+        // Create report
+        const report = new FraudReport({
+          aadhaar: aadhaar.toString(),
+          name,
+          mobile: formattedMobile,
+          callSid: call.sid,
+          callStatus: 'initiated'
+        });
+
+        return report.save().then(() => {
+          res.json({ 
+            success: true,
+            message: 'Call initiated successfully',
+            callSid: call.sid,
+            consumerName: name,
+            reportId: report._id
+          });
+        });
+      });
+    })
+    .catch(error => {
+      console.error('❌ Error in report-fraud:', error);
+      
+      if (error.message && error.message.includes('Consumer not found')) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Consumer not found with this Aadhaar number' 
+        });
       }
       
-      return reportObj;
+      res.status(500).json({ 
+        success: false, 
+        error: 'Internal server error',
+        details: error.message 
+      });
     });
-    
-    res.json({
-      success: true,
-      reports: reportsWithPlayableUrl
-    });
-  } catch (error) {
-    console.error('❌ Error fetching reports:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error fetching reports' 
-    });
-  }
 });
 
-// Stream recording from Twilio
-router.get('/recording/:recordingSid', async (req, res) => {
-  try {
-    const recordingSid = req.params.recordingSid;
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    
-    // Create authentication header for Twilio
-    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-    
-    // Construct the URL to the recording
-    const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${recordingSid}.mp3`;
-    
-    // Make a request to Twilio to get the recording
-    const response = await axios({
-      method: 'get',
-      url: recordingUrl,
-      responseType: 'stream',
-      headers: {
-        'Authorization': `Basic ${auth}`
-      }
+// Get all reports with playable recording URLs - using promises instead of async/await
+router.get('/reports', (req, res) => {
+  FraudReport.find()
+    .sort({ createdAt: -1 })
+    .then(reports => {
+      // Add a playable URL for each recording
+      const reportsWithPlayableUrl = reports.map(report => {
+        const reportObj = report.toObject();
+        
+        if (reportObj.recordingUrl) {
+          // Extract the recording SID from the URL
+          const recordingSid = reportObj.recordingUrl.split('/').pop();
+          reportObj.playableRecordingUrl = `${getBaseUrl()}/api/recording/${recordingSid}`;
+        }
+        
+        return reportObj;
+      });
+      
+      res.json({
+        success: true,
+        reports: reportsWithPlayableUrl
+      });
+    })
+    .catch(error => {
+      console.error('❌ Error fetching reports:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Error fetching reports' 
+      });
     });
-    
+});
+
+// Stream recording from Twilio - using promises instead of async/await
+router.get('/recording/:recordingSid', (req, res) => {
+  const recordingSid = req.params.recordingSid;
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  
+  // Create authentication header for Twilio
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  
+  // Construct the URL to the recording
+  const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Recordings/${recordingSid}.mp3`;
+  
+  // Make a request to Twilio to get the recording
+  axios({
+    method: 'get',
+    url: recordingUrl,
+    responseType: 'stream',
+    headers: {
+      'Authorization': `Basic ${auth}`
+    }
+  })
+  .then(response => {
     // Set appropriate headers for audio streaming
     res.set('Content-Type', 'audio/mpeg');
     res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
@@ -389,10 +417,11 @@ router.get('/recording/:recordingSid', async (req, res) => {
     
     // Pipe the audio stream to the response
     response.data.pipe(res);
-  } catch (error) {
+  })
+  .catch(error => {
     console.error('Error fetching recording:', error);
     res.status(500).send('Error fetching recording');
-  }
+  });
 });
 
 // Serve the audio player page
@@ -468,16 +497,15 @@ router.get('/audio-player', (req, res) => {
   res.send(html);
 });
 
-// Get recording details including transcript
-router.get('/recording-details/:recordingSid', async (req, res) => {
-  try {
-    const recordingSid = req.params.recordingSid;
-    
-    // Find the report that contains this recording
-    const report = await FraudReport.findOne({
-      recordingUrl: { $regex: recordingSid }
-    });
-    
+// Get recording details including transcript - using promises instead of async/await
+router.get('/recording-details/:recordingSid', (req, res) => {
+  const recordingSid = req.params.recordingSid;
+  
+  // Find the report that contains this recording
+  FraudReport.findOne({
+    recordingUrl: { $regex: recordingSid }
+  })
+  .then(report => {
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -492,11 +520,60 @@ router.get('/recording-details/:recordingSid', async (req, res) => {
       fraudSeverity: report.fraudSeverity,
       language: report.language
     });
-  } catch (error) {
+  })
+  .catch(error => {
     console.error('Error fetching recording details:', error);
     res.status(500).json({
       success: false,
       error: 'Error fetching recording details'
+    });
+  });
+});
+
+// Debug route to check environment variables
+router.get('/debug', (req, res) => {
+  console.log('Debug route called');
+  res.json({
+    environment: process.env.NODE_ENV || 'not set',
+    baseUrl: getBaseUrl(),
+    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ? 
+      `${process.env.TWILIO_ACCOUNT_SID.substring(0, 4)}...` : 'not set',
+    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ? 
+      'is set (hidden)' : 'not set',
+    twilioPhone: process.env.TWILIO_PHONE_NUMBER || 'not set'
+  });
+});
+
+// Test Twilio credentials directly
+router.get('/test-twilio', (req, res) => {
+  try {
+    console.log('Testing Twilio credentials...');
+    console.log('Account SID:', process.env.TWILIO_ACCOUNT_SID?.substring(0, 4) + '...');
+    
+    const client = getTwilioClient();
+    
+    client.api.accounts(process.env.TWILIO_ACCOUNT_SID).fetch()
+      .then(account => {
+        res.json({
+          success: true,
+          accountName: account.friendlyName,
+          status: account.status
+        });
+      })
+      .catch(error => {
+        console.error('Twilio test error:', error);
+        res.status(500).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+          status: error.status
+        });
+      });
+  } catch (error) {
+    console.error('Twilio init error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });

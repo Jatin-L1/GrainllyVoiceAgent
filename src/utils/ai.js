@@ -46,9 +46,9 @@ const transcribeAudio = async (recordingUrl, language = 'en-US') => {
   }
 };
 
-// Analyze the fraud report without using Gemini API
-const analyzeFraudReport = async (transcript, language = 'en-US') => {
-  try {
+// Analyze the fraud report without using top-level await
+const analyzeFraudReport = (transcript, language = 'en-US') => {
+  return new Promise((resolve) => {
     console.log('🔍 Analyzing fraud report locally');
     
     // Keywords to look for in complaints
@@ -115,23 +115,16 @@ const analyzeFraudReport = async (transcript, language = 'en-US') => {
     
     console.log('✅ Fraud analysis complete');
     
-    return {
+    resolve({
       fraudSummary,
       fraudSeverity: severity
-    };
-  } catch (error) {
-    console.error('❌ Error analyzing fraud report:', error);
-    return {
-      fraudSummary: 'Error analyzing fraud report: ' + error.message,
-      fraudSeverity: 'medium'
-    };
-  }
+    });
+  });
 };
 
 module.exports = {
   analyzeFraudReport
-};
-// Process the recording
+};// Process the recording
 const processRecording = async (callSid, recordingUrl, language = 'en-US') => {
   try {
     console.log(`🔄 Processing recording for call ${callSid}`);
