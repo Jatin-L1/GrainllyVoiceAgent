@@ -1,0 +1,73 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "aadhaar",
+        "type": "uint256"
+      }
+    ],
+    "name": "getConsumerByAadhaar",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "aadhaar",
+            "type": "uint256"
+          },
+          {
+            "internalType": "string",
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "mobile",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "internalType": "uint256",
+            "name": "registrationTime",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "assignedShopkeeper",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "totalTokensReceived",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "totalTokensClaimed",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "lastTokenIssuedTime",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "isActive",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct ConsumerStruct",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]
